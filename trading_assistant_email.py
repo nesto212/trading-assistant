@@ -1,153 +1,109 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import matplotlib.pyplot as plt
 import ta
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import matplotlib.pyplot as plt
 
-# Load email secrets
-EMAIL_SENDER = st.secrets["email"]["sender"]
-EMAIL_RECEIVER = st.secrets["email"]["receiver"]
-EMAIL_PASSWORD = st.secrets["email"]["password"]
+# --- Streamlit Page Setup ---
+st.set_page_config(page_title="Trading Assistant", layout="wide")
+st.title("📈 Trading Assistant with Signals & Email Alerts")
+
+# --- Email Configuration ---
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
+EMAIL_ADDRESS = "your_email@gmail.com"  # <-- Replace with your email
+EMAIL_PASSWORD = "your_app_password"    # <-- Replace with your app-specific password
 
-st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
-st.title("📧 Trading 212 Assistant + Email Alerts")
-
-# User inputs
-ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
-interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
-period_map = {
-    "1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d",
-    "1d": "3mo", "1wk": "6mo", "1mo": "1y"
-}
-period = period_map[interval]
-
-# Cache data fetch with fix for 1D columns
+# --- Data Fetching ---
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval)
-    # Flatten columns if multi-index (e.g., if multiple tickers)
+    df = yf.download(ticker, period=period, interval=interval, auto_adjust=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(1)
-    # Ensure Close and Volume columns are 1D float Series
-    df['Close'] = df['Close'].astype(float)
-    df['Volume'] = df['Volume'].astype(float)
-    df.dropna(inplace=True)
-    return df
+    return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-# Email sender
+# --- Technical Indicators ---
+def compute_indicators(df):
+    df["EMA20"] = ta.trend.EMAIndicator(df["Close"], window=20).ema_indicator()
+    df["RSI"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
+    return df.dropna()
+
+# --- Signal Logic ---
+def generate_signal(df):
+    latest = df.iloc[-1]
+    if latest["RSI"] < 30 and latest["Close"] > latest["EMA20"]:
+        return "BUY"
+    elif latest["RSI"] > 70 and latest["Close"] < latest["EMA20"]:
+        return "SELL"
+    else:
+        return "HOLD"
+
+# --- Email Sender ---
 def send_email(subject, body):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_RECEIVER
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-
     try:
+        msg = MIMEMultipart()
+        msg["From"] = EMAIL_ADDRESS
+        msg["To"] = EMAIL_ADDRESS
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.send_message(msg)
         server.quit()
-        st.info("📤 Email alert sent.")
+        return True
     except Exception as e:
-        st.error(f"❌ Failed to send email: {e}")
+        st.error(f"❌ Email failed: {e}")
+        return False
 
-# Strategy logic
-def apply_strategy(df):
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("Data missing required columns 'Close' and/or 'Volume'.")
-        df['signal'] = 0
-        return df
+# --- Sidebar Inputs ---
+tickers = st.text_input("📥 Enter tickers (comma-separated)", value="AAPL,MSFT,GOOGL").upper().split(",")
+interval = st.selectbox("⏱️ Interval", ["5m", "15m", "1h", "1d"])
+period_map = {"5m": "5d", "15m": "5d", "1h": "7d", "1d": "1mo"}
+period = period_map[interval]
 
-    df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
-    df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
-    df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
+send_email_alerts = st.checkbox("📧 Send Email Alerts for BUY/SELL signals")
 
-    macd = ta.trend.MACD(df['Close'])
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
+# --- Scan Tickers ---
+alerts = []
 
-    df['volume_ma'] = ta.trend.sma_indicator(df['Volume'], window=20)
-
-    df['signal'] = 0
-    df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
-    df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
-
-    return df
-
-# Main logic
-if ticker:
+for ticker in tickers:
+    ticker = ticker.strip()
+    st.subheader(f"📊 {ticker}")
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty or len(df) < 2:
-            st.warning("⚠️ No or insufficient data. Check ticker or interval.")
-            st.stop()
-
-        df = apply_strategy(df)
-
+        df = compute_indicators(df)
+        signal = generate_signal(df)
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
 
-        if 'last_signal' not in st.session_state:
-            st.session_state.last_signal = 0
+        # --- Metrics ---
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Price", f"${latest['Close']:.2f}")
+            st.metric("RSI", f"{latest['RSI']:.2f}")
+            st.metric("Signal", signal)
 
-        signal_text = "⚠️ HOLD — No new signal"
-        if int(prev['signal']) != int(latest['signal']) and int(latest['signal']) != int(st.session_state.last_signal):
-            st.session_state.last_signal = int(latest['signal'])
+        # --- Chart ---
+        with col2:
+            st.line_chart(df[["Close", "EMA20"]])
 
-            message = (
-                f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
-                f"Price: ${latest['Close']:.2f}\n"
-                f"RSI: {latest['rsi']:.2f}\n"
-                f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
-                f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
-            )
-
-            if latest['signal'] == 1:
-                signal_text = f"📈 BUY signal at ${latest['Close']:.2f}"
-                send_email(f"BUY Alert for {ticker}", message)
-            elif latest['signal'] == -1:
-                signal_text = f"📉 SELL signal at ${latest['Close']:.2f}"
-                send_email(f"SELL Alert for {ticker}", message)
-
-        st.subheader(f"Signal: {signal_text}")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("RSI (14)", f"{latest['rsi']:.2f}")
-        col2.metric("MACD", f"{latest['macd']:.2f}")
-        col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
-
-        ax1.plot(df.index, df['Close'], label='Close Price', color='black')
-        ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
-        ax1.plot(df.index, df['sma30'], label='SMA 30', color='red')
-        ax1.bar(df.index, df['Volume'], color='lightgray', alpha=0.3, label='Volume')
-        ax1.set_title(f"{ticker} — Price & SMAs")
-        ax1.legend()
-
-        ax2.plot(df.index, df['rsi'], label='RSI (14)', color='purple')
-        ax2.axhline(70, linestyle='--', color='red')
-        ax2.axhline(30, linestyle='--', color='green')
-        ax2.set_title("RSI Indicator")
-        ax2.legend()
-
-        ax3.plot(df.index, df['macd'], label='MACD', color='blue')
-        ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='orange')
-        ax3.axhline(0, linestyle='--', color='black')
-        ax3.set_title("MACD")
-        ax3.legend()
-
-        plt.tight_layout()
-        st.pyplot(fig)
-
-        with st.expander("📋 View Raw Data"):
-            st.dataframe(df.tail(20))
+        # --- Email Alert ---
+        if send_email_alerts and signal in ["BUY", "SELL"]:
+            alerts.append(f"{ticker}: {signal} at ${latest['Close']:.2f}")
 
     except Exception as e:
-        st.error(f"An error occurred: {e}")
+        st.error(f"Error with {ticker}: {e}")
+
+# --- Send Alert Email ---
+if alerts:
+    body = "\n".join(alerts)
+    subject = "📈 Trading Signal Alert"
+    if send_email_alerts:
+        if send_email(subject, body):
+            st.success("✅ Email alert sent!")
+        else:
+            st.warning("⚠️ Email not sent.")
