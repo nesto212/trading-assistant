@@ -22,7 +22,6 @@ interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d"], index=1)
 period_map = {"1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d", "1d": "1mo"}
 period = period_map[interval]
 
-# ✅ FIXED: cache function OUTSIDE the class or any object
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
     df = yf.download(ticker, period=period, interval=interval)
@@ -30,6 +29,9 @@ def fetch_data(ticker, period, interval):
     return df
 
 def apply_strategy(df):
+    # Copy DataFrame to avoid mutating cached data
+    df = df.copy()
+
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.error("Data missing required columns 'Close' and/or 'Volume'.")
         return df
@@ -140,3 +142,4 @@ if ticker:
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
+
