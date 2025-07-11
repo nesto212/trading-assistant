@@ -7,22 +7,23 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import matplotlib.pyplot as plt
 
-# Load secrets from Streamlit config
+# Load secrets
 EMAIL_SENDER = st.secrets["email"]["sender"]
 EMAIL_RECEIVER = st.secrets["email"]["receiver"]
 EMAIL_PASSWORD = st.secrets["email"]["password"]
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
-# UI setup
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading 212 Assistant + Email Alerts")
 
-# User input
 ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=1)
-period_map = {"1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d", "1d": "1mo", "1wk": "3mo", "1mo": "6mo"}
-period = period_map[interval]
+period_map = {
+    "1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d", "1d": "1mo",
+    "1wk": "3mo", "1mo": "1y"
+}
+period = period_map.get(interval, "1mo")
 
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
@@ -31,25 +32,46 @@ def fetch_data(ticker, period, interval):
     return df
 
 def apply_strategy(df):
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("⚠️ Data missing 'Close' or 'Volume'. Adding default 'signal' = 0.")
+    # Defensive checks
+    if df.empty:
+        st.warning("⚠️ No data available. Markets may be closed or ticker is invalid.")
         df['signal'] = 0
         return df
 
-    close = df['Close'].astype(float)
-    volume = df['Volume'].astype(float)
+    if not {'Close', 'Volume'}.issubset(df.columns):
+        st.warning("⚠️ Data missing 'Close' and/or 'Volume' columns.")
+        df['signal'] = 0
+        return df
 
-    df['sma10'] = ta.trend.SMAIndicator(close=close, window=10).sma_indicator()
-    df['sma30'] = ta.trend.SMAIndicator(close=close, window=30).sma_indicator()
-    df['rsi'] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+    close = df['Close']
+    volume = df['Volume']
 
-    macd = ta.trend.MACD(close=close)
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
+    # Check if series are 1-dimensional and non-empty
+    if close.ndim != 1 or close.empty or volume.ndim != 1 or volume.empty:
+        st.warning("⚠️ 'Close' or 'Volume' data is invalid or empty.")
+        df['signal'] = 0
+        return df
 
-    df['signal'] = 0
-    df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
-    df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
+    # Ensure floats for indicators
+    close = close.astype(float)
+    volume = volume.astype(float)
+
+    try:
+        df['sma10'] = ta.trend.SMAIndicator(close=close, window=10).sma_indicator()
+        df['sma30'] = ta.trend.SMAIndicator(close=close, window=30).sma_indicator()
+        df['rsi'] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+
+        macd = ta.trend.MACD(close=close)
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
+
+        df['signal'] = 0
+        df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
+        df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
+
+    except Exception as e:
+        st.warning(f"⚠️ Error computing indicators: {e}")
+        df['signal'] = 0
 
     return df
 
@@ -70,17 +92,17 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
-# Main logic
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
         if df.empty:
-            st.warning("⚠️ No data returned. Check ticker symbol or interval.")
+            st.warning("⚠️ No data returned. Markets may be closed or ticker symbol invalid.")
             st.stop()
 
         df = apply_strategy(df)
 
-        if 'signal' not in df.columns or len(df) < 2:
+        # If signals missing or too short data, skip
+        if len(df) < 2 or 'signal' not in df.columns:
             st.warning("⚠️ Not enough data to generate signals.")
             st.stop()
 
@@ -112,9 +134,9 @@ if ticker:
         st.subheader(f"Signal: {signal_text}")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("RSI (14)", f"{latest['rsi']:.2f}")
-        col2.metric("MACD", f"{latest['macd']:.2f}")
-        col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
+        col1.metric("RSI (14)", f"{latest.get('rsi', 0):.2f}")
+        col2.metric("MACD", f"{latest.get('macd', 0):.2f}")
+        col3.metric("Signal Line", f"{latest.get('macd_signal', 0):.2f}")
 
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
 
