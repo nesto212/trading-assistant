@@ -22,7 +22,6 @@ interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d"], index=1)
 period_map = {"1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d", "1d": "1mo"}
 period = period_map[interval]
 
-# Cache function outside any class/object
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
     df = yf.download(ticker, period=period, interval=interval)
@@ -30,26 +29,26 @@ def fetch_data(ticker, period, interval):
     return df
 
 def apply_strategy(df):
-    # Check if Close and Volume exist
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("Data missing required columns 'Close' and/or 'Volume'. Adding default 'signal' = 0")
-        # Add signal column filled with zeros to avoid errors downstream
+    # Handle missing columns
+    if 'Close' not in df.columns or 'Volume' not in df.columns:
+        st.warning("⚠️ Data missing required columns 'Close' and/or 'Volume'. This may happen outside trading hours.")
         df['signal'] = 0
         return df
 
     close = df['Close']
     volume = df['Volume']
 
+    # Apply indicators
     df['sma10'] = ta.trend.sma_indicator(close=close, window=10)
     df['sma30'] = ta.trend.sma_indicator(close=close, window=30)
     df['rsi'] = ta.momentum.rsi(close=close, window=14)
 
-    macd_indicator = ta.trend.MACD(close=close)
-    df['macd'] = macd_indicator.macd()
-    df['macd_signal'] = macd_indicator.macd_signal()
+    macd = ta.trend.MACD(close)
+    df['macd'] = macd.macd()
+    df['macd_signal'] = macd.macd_signal()
+    df['volume_ma'] = ta.trend.sma_indicator(volume, window=20)
 
-    df['volume_ma'] = ta.trend.sma_indicator(close=volume, window=20)
-
+    # Signal logic
     df['signal'] = 0
     df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
     df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
@@ -76,51 +75,50 @@ def send_email(subject, body):
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty:
-            st.warning("⚠️ No data returned. Check ticker symbol or interval.")
+
+        if df.empty or len(df) < 2:
+            st.warning("⚠️ No or insufficient data returned. Market might be closed.")
             st.stop()
 
         df = apply_strategy(df)
 
-        # Ensure we have at least 2 rows for signal comparison
-        if len(df) < 2 or 'signal' not in df.columns:
-            st.warning("Not enough data or missing signal column to generate alerts.")
-            st.stop()
+        if 'signal' not in df.columns:
+            df['signal'] = 0
 
-        latest_signal = df['signal'].iloc[-1]
-        prev_signal = df['signal'].iloc[-2]
+        st.write("✅ Data loaded. Showing preview:")
+        st.dataframe(df.tail(5))
+
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
 
         if 'last_signal' not in st.session_state:
             st.session_state.last_signal = 0
 
         signal_text = "⚠️ HOLD — No new signal"
+        if latest['signal'] != prev['signal'] and latest['signal'] != st.session_state.last_signal:
+            st.session_state.last_signal = int(latest['signal'])
 
-        # Use scalar values for comparison to avoid ambiguous truth value error
-        if prev_signal != latest_signal and latest_signal != st.session_state.last_signal:
-            st.session_state.last_signal = latest_signal
-
-            latest = df.iloc[-1]
             message = (
-                f"Signal: {'BUY' if latest_signal == 1 else 'SELL'}\n"
+                f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
                 f"Price: ${latest['Close']:.2f}\n"
                 f"RSI: {latest['rsi']:.2f}\n"
                 f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
                 f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
             )
 
-            if latest_signal == 1:
+            if latest['signal'] == 1:
                 signal_text = f"📈 BUY signal at ${latest['Close']:.2f}"
                 send_email(f"BUY Alert for {ticker}", message)
-            elif latest_signal == -1:
+            elif latest['signal'] == -1:
                 signal_text = f"📉 SELL signal at ${latest['Close']:.2f}"
                 send_email(f"SELL Alert for {ticker}", message)
 
         st.subheader(f"Signal: {signal_text}")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("RSI (14)", f"{df['rsi'].iloc[-1]:.2f}")
-        col2.metric("MACD", f"{df['macd'].iloc[-1]:.2f}")
-        col3.metric("Signal Line", f"{df['macd_signal'].iloc[-1]:.2f}")
+        col1.metric("RSI (14)", f"{latest['rsi']:.2f}")
+        col2.metric("MACD", f"{latest['macd']:.2f}")
+        col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
 
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
 
@@ -146,9 +144,7 @@ if ticker:
         plt.tight_layout()
         st.pyplot(fig)
 
-        with st.expander("📋 View Raw Data"):
-            st.dataframe(df.tail(20))
-
     except Exception as e:
         st.error(f"An error occurred: {e}")
+
 
