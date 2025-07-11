@@ -16,13 +16,23 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading 212 Assistant + Email Alerts")
 
+# Extended intervals list with weekly and monthly
+intervals = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]
+
 ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
-interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
+interval = st.selectbox("Interval", intervals, index=4)  # Default to "1d"
+
 period_map = {
-    "1m": "1d", "5m": "5d", "15m": "5d",
-    "1h": "7d", "1d": "1mo", "1wk": "3mo", "1mo": "1y"
+    "1m": "1d",
+    "5m": "5d",
+    "15m": "5d",
+    "1h": "7d",
+    "1d": "1mo",
+    "1wk": "3mo",
+    "1mo": "1y"
 }
-period = period_map[interval]
+
+period = period_map.get(interval, "1mo")
 
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
@@ -33,13 +43,30 @@ def fetch_data(ticker, period, interval):
 def apply_strategy(df):
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.error("Data missing required columns 'Close' and/or 'Volume'.")
-        # Add default signal column to avoid further errors
         df['signal'] = 0
         return df
 
-    # Squeeze to ensure 1D Series for ta functions
-    close = df['Close'].squeeze()
-    volume = df['Volume'].squeeze()
+    # DEBUG: Show shapes and types
+    st.write(f"Close type: {type(df['Close'])}, shape: {df['Close'].shape}")
+    st.write(f"Volume type: {type(df['Volume'])}, shape: {df['Volume'].shape}")
+
+    close = df['Close']
+    volume = df['Volume']
+
+    # Squeeze just to be safe (should already be Series)
+    if hasattr(close, 'squeeze'):
+        close = close.squeeze()
+    if hasattr(volume, 'squeeze'):
+        volume = volume.squeeze()
+
+    st.write(f"Close after squeeze type: {type(close)}, shape: {getattr(close, 'shape', None)}")
+    st.write(f"Volume after squeeze type: {type(volume)}, shape: {getattr(volume, 'shape', None)}")
+
+    # Make sure close and volume are 1D Series
+    if len(close.shape) > 1:
+        close = close.iloc[:, 0]
+    if len(volume.shape) > 1:
+        volume = volume.iloc[:, 0]
 
     df['sma10'] = ta.trend.sma_indicator(close=close, window=10)
     df['sma30'] = ta.trend.sma_indicator(close=close, window=30)
