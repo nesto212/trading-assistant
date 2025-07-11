@@ -6,7 +6,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Load email secrets
 EMAIL_SENDER = st.secrets["email"]["sender"]
@@ -27,10 +26,16 @@ period_map = {
 }
 period = period_map[interval]
 
-# Cache data fetch
+# Cache data fetch with fix for 1D columns
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
     df = yf.download(ticker, period=period, interval=interval)
+    # Flatten columns if multi-index (e.g., if multiple tickers)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(1)
+    # Ensure Close and Volume columns are 1D float Series
+    df['Close'] = df['Close'].astype(float)
+    df['Volume'] = df['Volume'].astype(float)
     df.dropna(inplace=True)
     return df
 
@@ -54,9 +59,8 @@ def send_email(subject, body):
 
 # Strategy logic
 def apply_strategy(df):
-    # Require at least 30 rows for SMA30, RSI(14), MACD
-    if df.shape[0] < 30:
-        st.warning("Not enough data (need 30+ rows) to calculate indicators.")
+    if not {'Close', 'Volume'}.issubset(df.columns):
+        st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         df['signal'] = 0
         return df
 
@@ -80,19 +84,14 @@ def apply_strategy(df):
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty or len(df) < 30:
-            st.warning("⚠️ No or insufficient data. Need at least 30 rows.")
+        if df.empty or len(df) < 2:
+            st.warning("⚠️ No or insufficient data. Check ticker or interval.")
             st.stop()
 
         df = apply_strategy(df)
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
-
-        # Make sure indicator values are not NaN before proceeding
-        if pd.isna(latest['rsi']) or pd.isna(latest['macd']) or pd.isna(latest['macd_signal']) or pd.isna(latest['sma10']) or pd.isna(latest['sma30']):
-            st.warning("Latest indicator values contain NaN, skipping signal evaluation.")
-            st.stop()
 
         if 'last_signal' not in st.session_state:
             st.session_state.last_signal = 0
