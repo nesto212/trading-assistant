@@ -7,28 +7,21 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import matplotlib.pyplot as plt
 
-# Load email credentials from Streamlit secrets
+# Load secrets from Streamlit config
 EMAIL_SENDER = st.secrets["email"]["sender"]
 EMAIL_RECEIVER = st.secrets["email"]["receiver"]
 EMAIL_PASSWORD = st.secrets["email"]["password"]
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
+# UI setup
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading 212 Assistant + Email Alerts")
 
+# User input
 ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
-
-interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
-period_map = {
-    "1m": "1d",
-    "5m": "5d",
-    "15m": "5d",
-    "1h": "7d",
-    "1d": "1mo",
-    "1wk": "3mo",
-    "1mo": "6mo"
-}
+interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=1)
+period_map = {"1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d", "1d": "1mo", "1wk": "3mo", "1mo": "6mo"}
 period = period_map[interval]
 
 @st.cache_data(ttl=300)
@@ -38,17 +31,19 @@ def fetch_data(ticker, period, interval):
     return df
 
 def apply_strategy(df):
-    # Check required columns
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("⚠️ Data missing 'Close' or 'Volume'. Adding default 'signal' = 0.")
         df['signal'] = 0
         return df
 
-    df['sma10'] = ta.trend.sma_indicator(close=df['Close'], window=10)
-    df['sma30'] = ta.trend.sma_indicator(close=df['Close'], window=30)
-    df['rsi'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
+    close = df['Close'].astype(float)
+    volume = df['Volume'].astype(float)
 
-    macd = ta.trend.MACD(close=df['Close'])
+    df['sma10'] = ta.trend.SMAIndicator(close=close, window=10).sma_indicator()
+    df['sma30'] = ta.trend.SMAIndicator(close=close, window=30).sma_indicator()
+    df['rsi'] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+
+    macd = ta.trend.MACD(close=close)
     df['macd'] = macd.macd()
     df['macd_signal'] = macd.macd_signal()
 
@@ -71,22 +66,23 @@ def send_email(subject, body):
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
         server.quit()
-        st.success("📤 Email alert sent successfully.")
+        st.info("📤 Email alert sent.")
     except Exception as e:
-        st.error(f"❌ Email send failed: {e}")
+        st.error(f"❌ Failed to send email: {e}")
 
+# Main logic
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-
-        if df.empty or len(df) < 2:
-            st.warning("⚠️ No or insufficient data returned. Try a different ticker or interval.")
+        if df.empty:
+            st.warning("⚠️ No data returned. Check ticker symbol or interval.")
             st.stop()
 
         df = apply_strategy(df)
 
-        if 'signal' not in df.columns:
-            df['signal'] = 0
+        if 'signal' not in df.columns or len(df) < 2:
+            st.warning("⚠️ Not enough data to generate signals.")
+            st.stop()
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -120,11 +116,12 @@ if ticker:
         col2.metric("MACD", f"{latest['macd']:.2f}")
         col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
 
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
 
-        ax1.plot(df.index, df['Close'], label='Close', color='black')
+        ax1.plot(df.index, df['Close'], label='Close Price', color='black')
         ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
         ax1.plot(df.index, df['sma30'], label='SMA 30', color='red')
+        ax1.bar(df.index, df['Volume'], color='lightgray', alpha=0.3, label='Volume')
         ax1.set_title(f"{ticker} — Price & SMAs")
         ax1.legend()
 
