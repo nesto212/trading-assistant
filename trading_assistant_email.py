@@ -6,7 +6,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Load secrets
 EMAIL_SENDER = st.secrets["email"]["sender"]
@@ -18,10 +17,10 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading 212 Assistant + Email Alerts")
 
-# --- INTERVALS AND PERIOD MAP ---
-intervals = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]
-interval = st.selectbox("Interval", intervals, index=4)  # default to '1d'
+ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
+interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=1)
 
+# Extended period map to match new intervals
 period_map = {
     "1m": "1d",
     "5m": "5d",
@@ -29,43 +28,37 @@ period_map = {
     "1h": "7d",
     "1d": "1mo",
     "1wk": "3mo",
-    "1mo": "1y"
+    "1mo": "6mo",
 }
+period = period_map.get(interval, "1mo")  # fallback to 1mo if missing
 
-period = period_map.get(interval, "1mo")
-
-ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA").upper().strip()
-
-# --- CACHE FUNCTION ---
+# Cache data fetch outside any class or object
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
+    df = yf.download(ticker, period=period, interval=interval)
     df.dropna(inplace=True)
     return df
 
 def apply_strategy(df):
-    # Check required columns
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'. Adding default 'signal' = 0")
         df['signal'] = 0
         return df
 
-    # Flatten in case Series are 2D
-    close = np.ravel(df['Close'].values)
-    volume = np.ravel(df['Volume'].values)
+    # Ensure 1D series for TA functions
+    close = pd.Series(df['Close'].values.flatten(), index=df.index)
+    volume = pd.Series(df['Volume'].values.flatten(), index=df.index)
 
-    # Calculate indicators
-    df['sma10'] = ta.trend.sma_indicator(close=pd.Series(close), window=10)
-    df['sma30'] = ta.trend.sma_indicator(close=pd.Series(close), window=30)
-    df['rsi'] = ta.momentum.rsi(close=pd.Series(close), window=14)
+    df['sma10'] = ta.trend.sma_indicator(close=close, window=10)
+    df['sma30'] = ta.trend.sma_indicator(close=close, window=30)
+    df['rsi'] = ta.momentum.rsi(close=close, window=14)
 
-    macd_indicator = ta.trend.MACD(close=pd.Series(close))
+    macd_indicator = ta.trend.MACD(close=close)
     df['macd'] = macd_indicator.macd()
     df['macd_signal'] = macd_indicator.macd_signal()
 
-    df['volume_ma'] = ta.trend.sma_indicator(close=pd.Series(volume), window=20)
+    df['volume_ma'] = ta.trend.sma_indicator(close=volume, window=20)
 
-    # Generate signals: 1 = Buy, -1 = Sell, 0 = Hold
     df['signal'] = 0
     df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
     df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
@@ -92,15 +85,15 @@ def send_email(subject, body):
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-
         if df.empty:
-            st.warning("⚠️ No data returned. This can happen if the market is closed or the ticker/interval is invalid.")
+            st.warning("⚠️ No data returned. Check ticker symbol or interval.")
             st.stop()
 
         df = apply_strategy(df)
 
+        # Check that we have at least two rows to compare signals
         if len(df) < 2 or 'signal' not in df.columns:
-            st.warning("Not enough data or missing signals to generate alerts.")
+            st.warning("Not enough data or signals to generate alerts.")
             st.stop()
 
         latest = df.iloc[-1]
@@ -110,13 +103,12 @@ if ticker:
             st.session_state.last_signal = 0
 
         signal_text = "⚠️ HOLD — No new signal"
-        # Compare previous and latest signals and prevent duplicate alerts
+        # Only send alert if signal changed and differs from last sent signal
         if prev['signal'] != latest['signal'] and latest['signal'] != st.session_state.last_signal:
             st.session_state.last_signal = latest['signal']
 
-            signal_str = "BUY" if latest['signal'] == 1 else "SELL"
             message = (
-                f"Signal: {signal_str}\n"
+                f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
                 f"Price: ${latest['Close']:.2f}\n"
                 f"RSI: {latest['rsi']:.2f}\n"
                 f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
@@ -137,7 +129,8 @@ if ticker:
         col2.metric("MACD", f"{latest['macd']:.2f}")
         col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
 
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True,
+                                            gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
 
         ax1.plot(df.index, df['Close'], label='Close Price', color='black')
         ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
