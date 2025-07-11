@@ -29,11 +29,11 @@ def fetch_data(ticker, period, interval):
     return df
 
 def apply_strategy(df):
-    # Copy DataFrame to avoid mutating cached data
     df = df.copy()
-
+    # If required columns missing, add signal column with 0 and return
     if not {'Close', 'Volume'}.issubset(df.columns):
-        st.error("Data missing required columns 'Close' and/or 'Volume'.")
+        st.error("Data missing required columns 'Close' and/or 'Volume'. Adding default 'signal' = 0")
+        df['signal'] = 0
         return df
 
     close = df['Close']
@@ -80,6 +80,11 @@ if ticker:
             st.stop()
 
         df = apply_strategy(df)
+
+        # Guard clause to ensure 'signal' exists and enough rows to compare signals
+        if 'signal' not in df.columns or len(df) < 2:
+            st.error("Not enough data or missing 'signal' column to generate alerts.")
+            st.stop()
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
