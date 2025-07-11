@@ -29,7 +29,6 @@ def fetch_data(ticker, period, interval):
     return df
 
 def apply_strategy(df):
-    # Handle missing columns
     if 'Close' not in df.columns or 'Volume' not in df.columns:
         st.warning("⚠️ Data missing required columns 'Close' and/or 'Volume'. This may happen outside trading hours.")
         df['signal'] = 0
@@ -38,17 +37,16 @@ def apply_strategy(df):
     close = df['Close']
     volume = df['Volume']
 
-    # Apply indicators
-    df['sma10'] = ta.trend.sma_indicator(close=close, window=10)
-    df['sma30'] = ta.trend.sma_indicator(close=close, window=30)
-    df['rsi'] = ta.momentum.rsi(close=close, window=14)
+    df['sma10'] = ta.trend.sma_indicator(close=close, window=10).squeeze()
+    df['sma30'] = ta.trend.sma_indicator(close=close, window=30).squeeze()
+    df['rsi'] = ta.momentum.rsi(close=close, window=14).squeeze()
 
     macd = ta.trend.MACD(close)
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
-    df['volume_ma'] = ta.trend.sma_indicator(volume, window=20)
+    df['macd'] = macd.macd().squeeze()
+    df['macd_signal'] = macd.macd_signal().squeeze()
 
-    # Signal logic
+    df['volume_ma'] = ta.trend.sma_indicator(close=volume, window=20).squeeze()
+
     df['signal'] = 0
     df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
     df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
@@ -75,18 +73,15 @@ def send_email(subject, body):
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-
-        if df.empty or len(df) < 2:
-            st.warning("⚠️ No or insufficient data returned. Market might be closed.")
+        if df.empty:
+            st.warning("⚠️ No data returned. Check ticker symbol or interval.")
             st.stop()
 
         df = apply_strategy(df)
 
-        if 'signal' not in df.columns:
-            df['signal'] = 0
-
-        st.write("✅ Data loaded. Showing preview:")
-        st.dataframe(df.tail(5))
+        if 'signal' not in df.columns or len(df) < 2:
+            st.warning("⚠️ Not enough data to generate signal.")
+            st.stop()
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -95,8 +90,8 @@ if ticker:
             st.session_state.last_signal = 0
 
         signal_text = "⚠️ HOLD — No new signal"
-        if latest['signal'] != prev['signal'] and latest['signal'] != st.session_state.last_signal:
-            st.session_state.last_signal = int(latest['signal'])
+        if prev['signal'] != latest['signal'] and latest['signal'] != st.session_state.last_signal:
+            st.session_state.last_signal = latest['signal']
 
             message = (
                 f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
@@ -143,6 +138,9 @@ if ticker:
 
         plt.tight_layout()
         st.pyplot(fig)
+
+        with st.expander("📋 View Raw Data"):
+            st.dataframe(df.tail(20))
 
     except Exception as e:
         st.error(f"An error occurred: {e}")
