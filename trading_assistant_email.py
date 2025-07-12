@@ -21,12 +21,11 @@ st.title("📧 Trading 212 Assistant + Email Alerts")
 ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 
-# Period mapping with fallback for too short periods
 period_map = {
-    "1m": "5d",  # Increase period to 5d for 1m interval
+    "1m": "5d",
     "5m": "5d",
     "15m": "5d",
-    "1h": "1mo",  # 1h uses 1mo for better data
+    "1h": "1mo",
     "1d": "3mo",
     "1wk": "6mo",
     "1mo": "1y"
@@ -57,7 +56,6 @@ def send_email(subject, body):
         st.error(f"❌ Failed to send email: {e}")
 
 def apply_strategy(df):
-    # Check columns again here before indicators
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         return None
@@ -80,19 +78,20 @@ def apply_strategy(df):
 
 if ticker:
     df = fetch_data(ticker, period, interval)
+    st.write("⚙️ Debug: Columns fetched from Yahoo Finance:", df.columns.tolist())  # <-- debug info here
+
     if df.empty:
         st.warning("⚠️ No data returned. Try changing ticker, interval, or period.")
         st.stop()
+
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("⚠️ Data missing 'Close' or 'Volume'. Try a longer period or lower frequency interval.")
-        st.write("Data columns available:", df.columns.tolist())
         st.stop()
 
     df = apply_strategy(df)
     if df is None:
         st.stop()
 
-    # Ensure we have enough data after indicator calc
     if len(df) < 35:
         st.warning("⚠️ Not enough data points for indicators (need at least 35). Try a longer period.")
         st.stop()
