@@ -22,40 +22,27 @@ stocks = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA
 
 # Commodities with full names
 commodities = {
-    # Precious Metals
     "GC=F": "Gold",
     "SI=F": "Silver",
     "PL=F": "Platinum",
     "PA=F": "Palladium",
-
-    # Energy
     "CL=F": "Crude Oil (WTI)",
     "BZ=F": "Brent Crude Oil",
     "NG=F": "Natural Gas",
     "HO=F": "Heating Oil",
     "RB=F": "RBOB Gasoline",
-
-    # Agriculture - Grains & Oilseeds
     "ZW=F": "Wheat",
     "ZC=F": "Corn",
     "ZS=F": "Soybeans",
     "ZL=F": "Soybean Oil",
     "ZM=F": "Soybean Meal",
-
-    # Soft Commodities
     "KC=F": "Coffee",
     "CC=F": "Cocoa",
     "SB=F": "Sugar #11",
     "CT=F": "Cotton",
-
-    # Livestock
     "LE=F": "Live Cattle",
     "HE=F": "Lean Hogs",
-
-    # Base Metals
     "HG=F": "Copper",
-
-    # Other
     "QC=F": "Canadian Dollar",
     "DX=F": "US Dollar Index"
 }
@@ -71,11 +58,9 @@ forex = {
     "NZDUSD=X": "NZD/USD"
 }
 
-# Prepare options for dropdowns
 commodity_options = [f"{name} ({ticker})" for ticker, name in commodities.items()]
 forex_options = [f"{name} ({ticker})" for ticker, name in forex.items()]
 
-# Select category
 category = st.radio("Select Category:", ["Stocks", "Commodities", "Forex"])
 
 if category == "Stocks":
@@ -83,7 +68,7 @@ if category == "Stocks":
 elif category == "Commodities":
     selected = st.selectbox(f"Select {category} Ticker:", commodity_options)
     ticker = selected.split("(")[-1].strip(")")
-else:  # Forex
+else:
     selected = st.selectbox(f"Select {category} Pair:", forex_options)
     ticker = selected.split("(")[-1].strip(")")
 
@@ -123,31 +108,14 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
-def fibonacci_levels(df):
-    max_price = df['Close'].max()
-    min_price = df['Close'].min()
-    diff = max_price - min_price
-
-    levels = {
-        "level_0": max_price,
-        "level_236": max_price - 0.236 * diff,
-        "level_382": max_price - 0.382 * diff,
-        "level_5": max_price - 0.5 * diff,
-        "level_618": max_price - 0.618 * diff,
-        "level_786": max_price - 0.786 * diff,
-        "level_1": min_price
-    }
-    return levels
-
 def apply_strategy(df):
-    required_cols = {'Close', 'Volume', 'High', 'Low'}
-    if not required_cols.issubset(df.columns):
-        st.warning(f"Data missing required columns: {required_cols}")
-        return None, None
+    if not {'Close', 'Volume', 'High', 'Low'}.issubset(df.columns):
+        return None
     
-    df = df.dropna(subset=required_cols)
-    
-    # Existing indicators
+    df = df.dropna(subset=['Close', 'Volume', 'High', 'Low'])
+    if len(df) < 35:
+        return None
+
     df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
     df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
     df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
@@ -155,76 +123,46 @@ def apply_strategy(df):
     macd = ta.trend.MACD(df['Close'])
     df['macd'] = macd.macd()
     df['macd_signal'] = macd.macd_signal()
-    
-    # Bollinger Bands (20-period, 2 std)
-    bb_indicator = ta.volatility.BollingerBands(df['Close'], window=20, window_dev=2)
-    df['bb_upper'] = bb_indicator.bollinger_hband()
-    df['bb_lower'] = bb_indicator.bollinger_lband()
-    df['bb_middle'] = bb_indicator.bollinger_mavg()
-    
-    # Stochastic Oscillator (%K and %D)
+
+    df['atr'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
     stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'], window=14, smooth_window=3)
     df['stoch_k'] = stoch.stoch()
     df['stoch_d'] = stoch.stoch_signal()
-    
-    # Fibonacci levels
-    levels = fibonacci_levels(df)
-    threshold = 0.01
 
-    def near_fib_levels(price):
-        for level_price in levels.values():
-            if abs(price - level_price) / price < threshold:
-                return True
-        return False
+    df['adx'] = ta.trend.adx(df['High'], df['Low'], df['Close'], window=14)
+
+    df['vol_ma'] = df['Volume'].rolling(window=20).mean()
 
     df['signal'] = 0
-    for i in range(1, len(df)):
-        prev_sma10 = df['sma10'].iloc[i-1]
-        prev_sma30 = df['sma30'].iloc[i-1]
-        curr_sma10 = df['sma10'].iloc[i]
-        curr_sma30 = df['sma30'].iloc[i]
-        price = df['Close'].iloc[i]
-        rsi = df['rsi'].iloc[i]
-        stoch_k = df['stoch_k'].iloc[i]
-        stoch_d = df['stoch_d'].iloc[i]
-        bb_lower = df['bb_lower'].iloc[i]
-        bb_upper = df['bb_upper'].iloc[i]
+    df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
+    df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
 
-        # SMA crossover condition
-        sma_buy = (prev_sma10 <= prev_sma30) and (curr_sma10 > curr_sma30)
-        sma_sell = (prev_sma10 >= prev_sma30) and (curr_sma10 < curr_sma30)
+    return df
 
-        # Bollinger confirmation: price near lower band for buy, upper band for sell
-        bb_buy = price <= bb_lower * 1.01
-        bb_sell = price >= bb_upper * 0.99
-
-        # Stochastic confirmation: oversold for buy, overbought for sell
-        stoch_buy = stoch_k < 20 and stoch_d < 20 and stoch_k > stoch_d  # %K crossing above %D in oversold zone
-        stoch_sell = stoch_k > 80 and stoch_d > 80 and stoch_k < stoch_d  # %K crossing below %D in overbought zone
-
-        # Fibonacci confirmation
-        fib_confirm = near_fib_levels(price)
-
-        if sma_buy and bb_buy and stoch_buy and fib_confirm:
-            df.at[df.index[i], 'signal'] = 1
-        elif sma_sell and bb_sell and stoch_sell and fib_confirm:
-            df.at[df.index[i], 'signal'] = -1
-        else:
-            df.at[df.index[i], 'signal'] = df['signal'].iloc[i-1]
-
-    return df, levels
+def calculate_tp_sl(latest, atr, signal, risk_reward=2.0, atr_multiplier=1.5):
+    entry_price = latest['Close']
+    sl = None
+    tp = None
+    
+    if signal == 1:  # BUY
+        sl = entry_price - atr_multiplier * atr
+        tp = entry_price + risk_reward * (entry_price - sl)
+    elif signal == -1:  # SELL
+        sl = entry_price + atr_multiplier * atr
+        tp = entry_price - risk_reward * (sl - entry_price)
+    
+    return sl, tp
 
 if ticker:
     df = fetch_data(ticker, period, interval)
     if df.empty:
         st.warning("⚠️ No data returned. Try changing ticker, interval, or period.")
         st.stop()
-    required_cols = {'Close', 'Volume', 'High', 'Low'}
-    if not required_cols.issubset(df.columns):
-        st.warning(f"⚠️ Data missing columns {required_cols}. Try a longer period or lower frequency interval.")
+    if not {'Close', 'Volume', 'High', 'Low'}.issubset(df.columns):
+        st.warning("⚠️ Data missing 'Close', 'Volume', 'High', or 'Low'. Try a longer period or lower frequency interval.")
         st.stop()
 
-    df, fib_levels = apply_strategy(df)
+    df = apply_strategy(df)
     if df is None:
         st.stop()
 
@@ -247,9 +185,7 @@ if ticker:
             f"Price: ${latest['Close']:.2f}\n"
             f"RSI: {latest['rsi']:.2f}\n"
             f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
-            f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}\n"
-            f"Bollinger Bands - Upper: {latest['bb_upper']:.2f}, Lower: {latest['bb_lower']:.2f}\n"
-            f"Stochastic %K: {latest['stoch_k']:.2f}, %D: {latest['stoch_d']:.2f}"
+            f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
         )
 
         if latest['signal'] == 1:
@@ -266,46 +202,52 @@ if ticker:
     col2.metric("MACD", f"{latest['macd']:.2f}")
     col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
 
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(14, 16), sharex=True,
-                                             gridspec_kw={'height_ratios': [3, 1.2, 1.2, 1.2]})
+    # Calculate and show TP/SL
+    if latest['atr'] > 0 and latest['signal'] != 0:
+        sl, tp = calculate_tp_sl(latest, latest['atr'], latest['signal'])
+        st.markdown(f"**Take Profit:** ${tp:.2f}  |  **Stop Loss:** ${sl:.2f}")
+    else:
+        sl, tp = None, None
+        st.markdown("**Take Profit:** N/A  |  **Stop Loss:** N/A")
 
-    # Price + SMAs + Volume + Bollinger Bands
+    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(14, 18), sharex=True,
+                                                 gridspec_kw={'height_ratios': [3, 1.2, 1.2, 1, 1]})
+
     ax1.plot(df.index, df['Close'], label='Close Price', color='black')
     ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
     ax1.plot(df.index, df['sma30'], label='SMA 30', color='red')
-    ax1.plot(df.index, df['bb_upper'], label='BB Upper', linestyle='--', color='cyan')
-    ax1.plot(df.index, df['bb_middle'], label='BB Middle', linestyle='--', color='gray')
-    ax1.plot(df.index, df['bb_lower'], label='BB Lower', linestyle='--', color='cyan')
     ax1.bar(df.index, df['Volume'], color='lightgray', alpha=0.3, label='Volume')
-    ax1.set_title(f"{ticker} — Price, SMAs & Bollinger Bands")
-    ax1.legend()
+    ax1.set_title(f"{ticker} — Price & SMAs")
 
-    # RSI
-    ax2.plot(df.index, df['rsi'], label='RSI (14)', color='purple')
-    ax2.axhline(70, linestyle='--', color='red')
-    ax2.axhline(30, linestyle='--', color='green')
-    ax2.set_title("Relative Strength Index")
+    # Plot TP/SL lines if available
+    if sl is not None and tp is not None:
+        ax1.axhline(sl, color='red', linestyle='--', linewidth=1.5, label='Stop Loss')
+        ax1.axhline(tp, color='green', linestyle='--', linewidth=1.5, label='Take Profit')
+
+    ax1.legend(loc='upper left')
+
+    ax2.plot(df.index, df['rsi'], label='RSI', color='purple')
+    ax2.axhline(70, color='red', linestyle='--')
+    ax2.axhline(30, color='green', linestyle='--')
+    ax2.set_title("RSI")
     ax2.legend()
 
-    # MACD
     ax3.plot(df.index, df['macd'], label='MACD', color='blue')
-    ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='red')
+    ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='orange')
     ax3.set_title("MACD")
     ax3.legend()
 
-    # Stochastic Oscillator
-    ax4.plot(df.index, df['stoch_k'], label='%K', color='magenta')
-    ax4.plot(df.index, df['stoch_d'], label='%D', color='orange')
-    ax4.axhline(80, linestyle='--', color='red')
-    ax4.axhline(20, linestyle='--', color='green')
+    ax4.plot(df.index, df['stoch_k'], label='%K', color='green')
+    ax4.plot(df.index, df['stoch_d'], label='%D', color='red')
+    ax4.axhline(80, color='red', linestyle='--')
+    ax4.axhline(20, color='green', linestyle='--')
     ax4.set_title("Stochastic Oscillator")
     ax4.legend()
 
-    plt.xticks(rotation=45)
+    ax5.plot(df.index, df['adx'], label='ADX', color='brown')
+    ax5.axhline(25, color='blue', linestyle='--')
+    ax5.set_title("ADX")
+    ax5.legend()
+
     plt.tight_layout()
     st.pyplot(fig)
-
-    # Show Fibonacci levels info
-    st.markdown("### Fibonacci Levels:")
-    for level, price in fib_levels.items():
-        st.write(f"{level}: {price:.2f}")
