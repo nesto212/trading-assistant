@@ -7,7 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import matplotlib.pyplot as plt
 
-# Load email secrets
+# Load email secrets from Streamlit secrets manager
 EMAIL_SENDER = st.secrets["email"]["sender"]
 EMAIL_RECEIVER = st.secrets["email"]["receiver"]
 EMAIL_PASSWORD = st.secrets["email"]["password"]
@@ -17,16 +17,8 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading 212 Assistant + Email Alerts")
 
-# --- Ticker selection ---
-popular_tickers = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "META", "NFLX", "NVDA", "SPY", "QQQ"]
-use_custom = st.checkbox("🔍 Enter custom ticker")
-
-if use_custom:
-    ticker = st.text_input("Enter Custom Ticker:", "TSLA").upper().strip()
-else:
-    ticker = st.selectbox("Select Popular Ticker:", popular_tickers)
-
-# Interval and period mapping
+# User inputs
+ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA").upper()
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 period_map = {
     "1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d",
@@ -34,14 +26,12 @@ period_map = {
 }
 period = period_map[interval]
 
-# Cache data fetch
 @st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     df.dropna(inplace=True)
     return df
 
-# Email sender
 def send_email(subject, body):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
@@ -59,22 +49,29 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
-# Strategy logic
 def apply_strategy(df):
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         df['signal'] = 0
         return df
 
-    df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
-    df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
-    df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
+    try:
+        df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
+        df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
+        df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
 
-    macd = ta.trend.MACD(df['Close'])
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
+        macd = ta.trend.MACD(df['Close'])
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
 
-    df['volume_ma'] = ta.trend.sma_indicator(df['Volume'], window=20)
+        df['volume_ma'] = ta.trend.sma_indicator(df['Volume'], window=20)
+    except Exception as e:
+        st.error(f"Indicator calculation failed: {e}")
+        df['signal'] = 0
+        return df
+
+    # Drop rows where indicators are NaN (usually at start due to window sizes)
+    df = df.dropna(subset=['sma10', 'sma30', 'rsi', 'macd', 'macd_signal'])
 
     df['signal'] = 0
     df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
@@ -82,25 +79,18 @@ def apply_strategy(df):
 
     return df
 
-# Main logic
 if ticker:
-    # Validate ticker by checking if data exists
-    try:
-        test_df = yf.Ticker(ticker).history(period="1d")
-        if test_df.empty:
-            st.error("⚠️ Invalid or inactive ticker. Please try another.")
-            st.stop()
-    except Exception:
-        st.error("⚠️ Error fetching ticker data. Please check ticker symbol.")
-        st.stop()
-
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty or len(df) < 2:
-            st.warning("⚠️ No or insufficient data. Check ticker or interval.")
+        if df.empty or len(df) < 30:  # at least enough for indicators
+            st.warning("⚠️ No or insufficient data. Try a longer period or different interval.")
             st.stop()
 
         df = apply_strategy(df)
+
+        if df.empty:
+            st.warning("No data after indicator calculation. Try different parameters.")
+            st.stop()
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
