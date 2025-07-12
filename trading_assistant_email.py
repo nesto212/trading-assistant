@@ -17,32 +17,36 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading Assistant + Email Alerts")
 
-# Select category: Stocks or Commodities
+# Commodity tickers with full names
+commodities = {
+    "GC=F": "Gold",
+    "SI=F": "Silver",
+    "CL=F": "Crude Oil",
+    "NG=F": "Natural Gas",
+    "HG=F": "Copper",
+    "CC=F": "Cocoa",
+    "KC=F": "Coffee",
+    "SB=F": "Sugar"
+}
+
+commodity_options = [f"{name} ({ticker})" for ticker, name in commodities.items()]
+
 category = st.radio("Select Category:", ["Stocks", "Commodities"])
 
 if category == "Stocks":
     ticker_list = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA", "INTC"]
+    ticker = st.selectbox(f"Select {category} Ticker:", ticker_list)
 else:
-    ticker_list = [
-        "GC=F",  # Gold
-        "SI=F",  # Silver
-        "CL=F",  # Crude Oil
-        "NG=F",  # Natural Gas
-        "HG=F",  # Copper
-        "CC=F",  # Cocoa
-        "KC=F",  # Coffee
-        "SB=F"   # Sugar
-    ]
-
-ticker = st.selectbox(f"Select {category} Ticker:", ticker_list)
+    selected = st.selectbox(f"Select {category} Ticker:", commodity_options)
+    ticker = selected.split("(")[-1].strip(")")
 
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 
 period_map = {
-    "1m": "5d",  
+    "1m": "5d",
     "5m": "5d",
     "15m": "5d",
-    "1h": "1mo",  
+    "1h": "1mo",
     "1d": "3mo",
     "1wk": "6mo",
     "1mo": "1y"
