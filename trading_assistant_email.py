@@ -1,72 +1,49 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import ta
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from difflib import get_close_matches
-import matplotlib.pyplot as plt
+tickers = [t.strip().upper() for t in ticker_input.split(',') if t.strip()]
 
-# --- Email Config ---
-EMAIL_SENDER = st.secrets["email"]["sender"]
-EMAIL_RECEIVER = st.secrets["email"]["receiver"]
-EMAIL_PASSWORD = st.secrets["email"]["password"]
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-
-# --- Streamlit App Setup ---
-st.set_page_config(page_title="Trading Assistant", layout="wide")
-st.title("📈 Trading Assistant with Alerts")
-
-# --- Ticker Input ---
-ticker_input = st.text_input("Enter ticker(s), separated by commas (e.g. AAPL, TSLA, AMZN):", "TSLA")
-interval = st.selectbox("Select Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
-period_map = {
-    "1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d",
-    "1d": "3mo", "1wk": "6mo", "1mo": "1y"
-}
-period = period_map[interval]
-
-# --- Cached Data Fetch ---
-@st.cache_data(ttl=300)
-def fetch_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
-    df.dropna(inplace=True)
-    return df
-
-# --- Email Alert ---
-def send_email(subject, body):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_RECEIVER
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-
+for ticker in tickers:
+    st.subheader(f"📊 {ticker}")
     try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        st.info("📤 Email alert sent.")
+        df = fetch_data(ticker, period, interval)
+        if df.empty:
+            st.warning(f"⚠️ No data for {ticker}. Skipping.")
+            continue
+
+        df = apply_strategy(df)
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        if f"{ticker}_last_signal" not in st.session_state:
+            st.session_state[f"{ticker}_last_signal"] = 0
+
+        signal_text = "⚠️ HOLD — No new signal"
+        if int(prev['signal']) != int(latest['signal']) and int(latest['signal']) != st.session_state[f"{ticker}_last_signal"]:
+            st.session_state[f"{ticker}_last_signal"] = int(latest['signal'])
+
+            message = (
+                f"{ticker} Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
+                f"Price: ${latest['Close']:.2f}\n"
+                f"RSI: {latest['rsi']:.2f}\n"
+                f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
+                f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
+            )
+
+            subject = f"{'BUY' if latest['signal'] == 1 else 'SELL'} Alert: {ticker}"
+            send_email(subject, message)
+            signal_text = f"{'📈 BUY' if latest['signal'] == 1 else '📉 SELL'} signal at ${latest['Close']:.2f}"
+
+        st.success(f"Signal: {signal_text}")
+        
+        # Optional: Plotting
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(df.index, df['Close'], label='Close', color='black')
+        ax.plot(df.index, df['sma10'], label='SMA10', color='blue')
+        ax.plot(df.index, df['sma30'], label='SMA30', color='red')
+        ax.set_title(f"{ticker} Price with SMAs")
+        ax.legend()
+        st.pyplot(fig)
+
+        with st.expander("View Data"):
+            st.dataframe(df.tail(20))
+
     except Exception as e:
-        st.error(f"❌ Email error: {e}")
-
-# --- Strategy ---
-def apply_strategy(df):
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("Missing 'Close' or 'Volume' columns.")
-        df['signal'] = 0
-        return df
-
-    df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
-    df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
-    df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
-
-    macd = ta.trend.MACD(df['Close'])
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
-
-    df['signal'] = 0
-    df.loc[df['sma10'] > df]()
+        st.error(f"❌ Error processing {ticker}: {e}")
