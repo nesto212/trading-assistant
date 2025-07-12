@@ -1,107 +1,218 @@
 import streamlit as st
-import sqlite3
-import bcrypt
-from datetime import datetime
+import yfinance as yf
+import pandas as pd
+import ta
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import matplotlib.pyplot as plt
+import hashlib
+import hmac
+import os
+import base64
 
-# --- Database setup ---
-conn = sqlite3.connect("users.db", check_same_thread=False)
-c = conn.cursor()
-c.execute('''
-CREATE TABLE IF NOT EXISTS users (
-    username TEXT PRIMARY KEY,
-    email TEXT,
-    password_hash BLOB,
-    paid INTEGER,
-    last_login TEXT
-)
-''')
-conn.commit()
+# -------- Password hashing utils --------
+def hash_password(password: str, salt: bytes = None) -> (str, str):
+    if salt is None:
+        salt = os.urandom(16)
+    hashed = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100_000)
+    salt_b64 = base64.b64encode(salt).decode('utf-8')
+    hash_b64 = base64.b64encode(hashed).decode('utf-8')
+    return salt_b64, hash_b64
 
-# --- Helper functions ---
-def hash_password(password):
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+def verify_password(password: str, salt_b64: str, hash_b64: str) -> bool:
+    salt = base64.b64decode(salt_b64.encode('utf-8'))
+    expected_hash = base64.b64decode(hash_b64.encode('utf-8'))
+    test_hash = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100_000)
+    return hmac.compare_digest(test_hash, expected_hash)
 
-def verify_password(password, pw_hash):
-    return bcrypt.checkpw(password.encode(), pw_hash)
+# -------- Email config --------
+EMAIL_SENDER = st.secrets["email"]["sender"]
+EMAIL_RECEIVER = st.secrets["email"]["receiver"]
+EMAIL_PASSWORD = st.secrets["email"]["password"]
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
 
-def register_user(username, email, password):
-    pw_hash = hash_password(password)
+# -------- User store --------
+# In-memory user store: username -> {salt, hash}
+if 'users' not in st.session_state:
+    st.session_state.users = {}
+
+# -------- Session state --------
+if 'logged_in_user' not in st.session_state:
+    st.session_state.logged_in_user = None
+
+# -------- Functions --------
+def send_email(subject, body):
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_SENDER
+    msg['To'] = EMAIL_RECEIVER
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
     try:
-        c.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?)",
-                  (username, email, pw_hash, 0, ""))
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        st.info("📤 Email alert sent.")
+    except Exception as e:
+        st.error(f"❌ Failed to send email: {e}")
 
-def login_user(username, password):
-    c.execute("SELECT password_hash, paid FROM users WHERE username = ?", (username,))
-    result = c.fetchone()
-    if result:
-        pw_hash, paid = result
-        if verify_password(password, pw_hash):
-            return paid == 1
-    return False
+@st.cache_data(ttl=300)
+def fetch_data(ticker, period, interval):
+    df = yf.download(ticker, period=period, interval=interval)
+    df.dropna(inplace=True)
+    return df
 
-def update_last_login(username):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("UPDATE users SET last_login = ? WHERE username = ?", (now, username))
-    conn.commit()
+def apply_strategy(df):
+    if not {'Close', 'Volume'}.issubset(df.columns):
+        st.warning("Data missing required columns 'Close' and/or 'Volume'.")
+        df['signal'] = 0
+        return df
 
-def mark_user_paid(username):
-    c.execute("UPDATE users SET paid = 1 WHERE username = ?", (username,))
-    conn.commit()
+    df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
+    df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
+    df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
 
-# --- Streamlit app ---
-st.title("🔒 Secure Trading App with Payment Check")
+    macd = ta.trend.MACD(df['Close'])
+    df['macd'] = macd.macd()
+    df['macd_signal'] = macd.macd_signal()
 
-menu = ["Home", "Register", "Login"]
-choice = st.sidebar.selectbox("Menu", menu)
+    df['signal'] = 0
+    df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
+    df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
+    return df
 
-if choice == "Register":
-    st.subheader("Create a New Account")
-    new_user = st.text_input("Username")
-    new_email = st.text_input("Email")
-    new_password = st.text_input("Password", type="password")
-    if st.button("Register"):
-        if new_user and new_email and new_password:
-            if register_user(new_user, new_email, new_password):
-                st.success("User registered! Please proceed to login.")
-            else:
-                st.error("Username already exists.")
+def register_user():
+    st.subheader("Register")
+    username = st.text_input("Username", key="reg_username")
+    password = st.text_input("Password", type="password", key="reg_password")
+    if st.button("Register", key="reg_button"):
+        if not username or not password:
+            st.error("Please enter both username and password.")
+            return
+        if username in st.session_state.users:
+            st.error("Username already exists.")
         else:
-            st.error("Please fill out all fields.")
+            salt, hashed = hash_password(password)
+            st.session_state.users[username] = {'salt': salt, 'hash': hashed}
+            st.success("User registered! Please login.")
 
-elif choice == "Login":
-    st.subheader("Login to Your Account")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if username and password:
-            if login_user(username, password):
-                update_last_login(username)
-                st.session_state.logged_in = True
-                st.session_state.username = username
-                st.success(f"Welcome, {username}!")
-            else:
-                st.error("Invalid username/password or payment required.")
+def login_user():
+    st.subheader("Login")
+    username = st.text_input("Username", key="login_username")
+    password = st.text_input("Password", type="password", key="login_password")
+    if st.button("Login", key="login_button"):
+        user = st.session_state.users.get(username)
+        if user and verify_password(password, user['salt'], user['hash']):
+            st.session_state.logged_in_user = username
+            st.success(f"Welcome back, {username}!")
         else:
-            st.error("Please enter username and password.")
+            st.error("Invalid username or password.")
 
-elif choice == "Home":
-    if st.session_state.logged_in:
-        st.success(f"Logged in as {st.session_state.username}")
-        st.write("✅ You have access to the secure trading assistant.")
-        # --- Your trading app code here ---
-        st.info("Trading app content goes here...")
-        # Example: mark user paid manually (for testing)
-        if st.button("Mark Me as Paid (Testing)"):
-            mark_user_paid(st.session_state.username)
-            st.success("Payment status updated. Please logout and login again.")
+def trading_assistant():
+    st.title(f"📈 Trading Assistant - User: {st.session_state.logged_in_user}")
+
+    ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
+    interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
+    period_map = {
+        "1m": "1d", "5m": "5d", "15m": "5d", "1h": "7d",
+        "1d": "3mo", "1wk": "6mo", "1mo": "1y"
+    }
+    period = period_map[interval]
+
+    if ticker:
+        try:
+            df = fetch_data(ticker, period, interval)
+            if df.empty or len(df) < 2:
+                st.warning("⚠️ No or insufficient data. Check ticker or interval.")
+                return
+
+            df = apply_strategy(df)
+
+            latest = df.iloc[-1]
+            prev = df.iloc[-2]
+
+            if 'last_signal' not in st.session_state:
+                st.session_state.last_signal = 0
+
+            signal_text = "⚠️ HOLD — No new signal"
+            if int(prev['signal']) != int(latest['signal']) and int(latest['signal']) != int(st.session_state.last_signal):
+                st.session_state.last_signal = int(latest['signal'])
+
+                message = (
+                    f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
+                    f"Price: ${latest['Close']:.2f}\n"
+                    f"RSI: {latest['rsi']:.2f}\n"
+                    f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
+                    f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
+                )
+
+                if latest['signal'] == 1:
+                    signal_text = f"📈 BUY signal at ${latest['Close']:.2f}"
+                    send_email(f"BUY Alert for {ticker}", message)
+                elif latest['signal'] == -1:
+                    signal_text = f"📉 SELL signal at ${latest['Close']:.2f}"
+                    send_email(f"SELL Alert for {ticker}", message)
+
+            st.subheader(f"Signal: {signal_text}")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("RSI (14)", f"{latest['rsi']:.2f}")
+            col2.metric("MACD", f"{latest['macd']:.2f}")
+            col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
+
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
+
+            ax1.plot(df.index, df['Close'], label='Close Price', color='black')
+            ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
+            ax1.plot(df.index, df['sma30'], label='SMA 30', color='red')
+            ax1.bar(df.index, df['Volume'], color='lightgray', alpha=0.3, label='Volume')
+            ax1.set_title(f"{ticker} — Price & SMAs")
+            ax1.legend()
+
+            ax2.plot(df.index, df['rsi'], label='RSI (14)', color='purple')
+            ax2.axhline(70, linestyle='--', color='red')
+            ax2.axhline(30, linestyle='--', color='green')
+            ax2.set_title("RSI Indicator")
+            ax2.legend()
+
+            ax3.plot(df.index, df['macd'], label='MACD', color='blue')
+            ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='orange')
+            ax3.axhline(0, linestyle='--', color='black')
+            ax3.set_title("MACD")
+            ax3.legend()
+
+            plt.tight_layout()
+            st.pyplot(fig)
+
+            with st.expander("📋 View Raw Data"):
+                st.dataframe(df.tail(20))
+
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+
+def logout():
+    st.session_state.logged_in_user = None
+    st.session_state.last_signal = 0
+    st.success("Logged out.")
+
+# -------- Main --------
+st.set_page_config(page_title="Trading Assistant with Secure Login", layout="wide")
+
+st.title("🔒 Secure Trading Assistant with Email Alerts")
+
+if st.session_state.logged_in_user:
+    st.sidebar.write(f"Logged in as: {st.session_state.logged_in_user}")
+    if st.sidebar.button("Logout"):
+        logout()
+    trading_assistant()
+else:
+    choice = st.sidebar.radio("Choose:", ["Login", "Register"])
+    if choice == "Login":
+        login_user()
     else:
-        st.warning("Please login or register to access the app.")
+        register_user()
