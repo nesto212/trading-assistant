@@ -123,13 +123,31 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
+def fibonacci_levels(df):
+    max_price = df['Close'].max()
+    min_price = df['Close'].min()
+    diff = max_price - min_price
+
+    levels = {
+        "level_0": max_price,
+        "level_236": max_price - 0.236 * diff,
+        "level_382": max_price - 0.382 * diff,
+        "level_5": max_price - 0.5 * diff,
+        "level_618": max_price - 0.618 * diff,
+        "level_786": max_price - 0.786 * diff,
+        "level_1": min_price
+    }
+    return levels
+
 def apply_strategy(df):
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("Data missing required columns 'Close' and/or 'Volume'.")
-        return None
+    required_cols = {'Close', 'Volume', 'High', 'Low'}
+    if not required_cols.issubset(df.columns):
+        st.warning(f"Data missing required columns: {required_cols}")
+        return None, None
     
-    df = df.dropna(subset=['Close', 'Volume'])
+    df = df.dropna(subset=required_cols)
     
+    # Existing indicators
     df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
     df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
     df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
@@ -137,23 +155,76 @@ def apply_strategy(df):
     macd = ta.trend.MACD(df['Close'])
     df['macd'] = macd.macd()
     df['macd_signal'] = macd.macd_signal()
+    
+    # Bollinger Bands (20-period, 2 std)
+    bb_indicator = ta.volatility.BollingerBands(df['Close'], window=20, window_dev=2)
+    df['bb_upper'] = bb_indicator.bollinger_hband()
+    df['bb_lower'] = bb_indicator.bollinger_lband()
+    df['bb_middle'] = bb_indicator.bollinger_mavg()
+    
+    # Stochastic Oscillator (%K and %D)
+    stoch = ta.momentum.StochasticOscillator(df['High'], df['Low'], df['Close'], window=14, smooth_window=3)
+    df['stoch_k'] = stoch.stoch()
+    df['stoch_d'] = stoch.stoch_signal()
+    
+    # Fibonacci levels
+    levels = fibonacci_levels(df)
+    threshold = 0.01
+
+    def near_fib_levels(price):
+        for level_price in levels.values():
+            if abs(price - level_price) / price < threshold:
+                return True
+        return False
 
     df['signal'] = 0
-    df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
-    df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
+    for i in range(1, len(df)):
+        prev_sma10 = df['sma10'].iloc[i-1]
+        prev_sma30 = df['sma30'].iloc[i-1]
+        curr_sma10 = df['sma10'].iloc[i]
+        curr_sma30 = df['sma30'].iloc[i]
+        price = df['Close'].iloc[i]
+        rsi = df['rsi'].iloc[i]
+        stoch_k = df['stoch_k'].iloc[i]
+        stoch_d = df['stoch_d'].iloc[i]
+        bb_lower = df['bb_lower'].iloc[i]
+        bb_upper = df['bb_upper'].iloc[i]
 
-    return df
+        # SMA crossover condition
+        sma_buy = (prev_sma10 <= prev_sma30) and (curr_sma10 > curr_sma30)
+        sma_sell = (prev_sma10 >= prev_sma30) and (curr_sma10 < curr_sma30)
+
+        # Bollinger confirmation: price near lower band for buy, upper band for sell
+        bb_buy = price <= bb_lower * 1.01
+        bb_sell = price >= bb_upper * 0.99
+
+        # Stochastic confirmation: oversold for buy, overbought for sell
+        stoch_buy = stoch_k < 20 and stoch_d < 20 and stoch_k > stoch_d  # %K crossing above %D in oversold zone
+        stoch_sell = stoch_k > 80 and stoch_d > 80 and stoch_k < stoch_d  # %K crossing below %D in overbought zone
+
+        # Fibonacci confirmation
+        fib_confirm = near_fib_levels(price)
+
+        if sma_buy and bb_buy and stoch_buy and fib_confirm:
+            df.at[df.index[i], 'signal'] = 1
+        elif sma_sell and bb_sell and stoch_sell and fib_confirm:
+            df.at[df.index[i], 'signal'] = -1
+        else:
+            df.at[df.index[i], 'signal'] = df['signal'].iloc[i-1]
+
+    return df, levels
 
 if ticker:
     df = fetch_data(ticker, period, interval)
     if df.empty:
         st.warning("⚠️ No data returned. Try changing ticker, interval, or period.")
         st.stop()
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("⚠️ Data missing 'Close' or 'Volume'. Try a longer period or lower frequency interval.")
+    required_cols = {'Close', 'Volume', 'High', 'Low'}
+    if not required_cols.issubset(df.columns):
+        st.warning(f"⚠️ Data missing columns {required_cols}. Try a longer period or lower frequency interval.")
         st.stop()
 
-    df = apply_strategy(df)
+    df, fib_levels = apply_strategy(df)
     if df is None:
         st.stop()
 
@@ -176,7 +247,9 @@ if ticker:
             f"Price: ${latest['Close']:.2f}\n"
             f"RSI: {latest['rsi']:.2f}\n"
             f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
-            f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
+            f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}\n"
+            f"Bollinger Bands - Upper: {latest['bb_upper']:.2f}, Lower: {latest['bb_lower']:.2f}\n"
+            f"Stochastic %K: {latest['stoch_k']:.2f}, %D: {latest['stoch_d']:.2f}"
         )
 
         if latest['signal'] == 1:
@@ -193,29 +266,46 @@ if ticker:
     col2.metric("MACD", f"{latest['macd']:.2f}")
     col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
 
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(14, 16), sharex=True,
+                                             gridspec_kw={'height_ratios': [3, 1.2, 1.2, 1.2]})
 
+    # Price + SMAs + Volume + Bollinger Bands
     ax1.plot(df.index, df['Close'], label='Close Price', color='black')
     ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
     ax1.plot(df.index, df['sma30'], label='SMA 30', color='red')
+    ax1.plot(df.index, df['bb_upper'], label='BB Upper', linestyle='--', color='cyan')
+    ax1.plot(df.index, df['bb_middle'], label='BB Middle', linestyle='--', color='gray')
+    ax1.plot(df.index, df['bb_lower'], label='BB Lower', linestyle='--', color='cyan')
     ax1.bar(df.index, df['Volume'], color='lightgray', alpha=0.3, label='Volume')
-    ax1.set_title(f"{ticker} — Price & SMAs")
+    ax1.set_title(f"{ticker} — Price, SMAs & Bollinger Bands")
     ax1.legend()
 
+    # RSI
     ax2.plot(df.index, df['rsi'], label='RSI (14)', color='purple')
     ax2.axhline(70, linestyle='--', color='red')
     ax2.axhline(30, linestyle='--', color='green')
-    ax2.set_title("RSI Indicator")
+    ax2.set_title("Relative Strength Index")
     ax2.legend()
 
+    # MACD
     ax3.plot(df.index, df['macd'], label='MACD', color='blue')
-    ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='orange')
-    ax3.axhline(0, linestyle='--', color='black')
+    ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='red')
     ax3.set_title("MACD")
     ax3.legend()
 
+    # Stochastic Oscillator
+    ax4.plot(df.index, df['stoch_k'], label='%K', color='magenta')
+    ax4.plot(df.index, df['stoch_d'], label='%D', color='orange')
+    ax4.axhline(80, linestyle='--', color='red')
+    ax4.axhline(20, linestyle='--', color='green')
+    ax4.set_title("Stochastic Oscillator")
+    ax4.legend()
+
+    plt.xticks(rotation=45)
     plt.tight_layout()
     st.pyplot(fig)
 
-    with st.expander("📋 View Raw Data"):
-        st.dataframe(df.tail(20))
+    # Show Fibonacci levels info
+    st.markdown("### Fibonacci Levels:")
+    for level, price in fib_levels.items():
+        st.write(f"{level}: {price:.2f}")
