@@ -51,13 +51,11 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
-# Strategy logic with added safety checks
+# Strategy logic
 def apply_strategy(df):
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         df['signal'] = 0
-        for col in ['rsi', 'macd', 'macd_signal', 'sma10', 'sma30']:
-            df[col] = 0
         return df
 
     df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
@@ -80,8 +78,8 @@ def apply_strategy(df):
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty:
-            st.warning("⚠️ No data retrieved for this ticker/interval.")
+        if df.empty or len(df) < 2:
+            st.warning("⚠️ No or insufficient data. Check ticker or interval.")
             st.stop()
 
         df = apply_strategy(df)
@@ -114,9 +112,18 @@ if ticker:
         st.subheader(f"Signal: {signal_text}")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("RSI (14)", f"{latest['rsi']:.2f}")
-        col2.metric("MACD", f"{latest['macd']:.2f}")
-        col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
+
+        try:
+            rsi_val = float(latest['rsi'])
+            macd_val = float(latest['macd'])
+            macd_signal_val = float(latest['macd_signal'])
+        except Exception as e:
+            st.error(f"Error converting indicators to float: {e}")
+            rsi_val = macd_val = macd_signal_val = 0.0
+
+        col1.metric("RSI (14)", f"{rsi_val:.2f}")
+        col2.metric("MACD", f"{macd_val:.2f}")
+        col3.metric("Signal Line", f"{macd_signal_val:.2f}")
 
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
 
