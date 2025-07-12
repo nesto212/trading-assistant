@@ -15,25 +15,19 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
-st.title("📧 Trading 212 Assistant + Email Alerts")
+st.title("📧 Trading Assistant + Email Alerts")
 
-# Popular tickers list
-popular_tickers = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NFLX", "NVDA", "META", "BTC-USD", "ETH-USD"]
-
-ticker_option = st.selectbox("Choose a ticker or enter custom:", popular_tickers + ["Other"])
-
-if ticker_option == "Other":
-    ticker = st.text_input("Enter custom ticker:", "TSLA")
-else:
-    ticker = ticker_option
+# Predefined tickers for dropdown
+ticker_list = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA", "INTC"]
+ticker = st.selectbox("Select Ticker:", ticker_list)
 
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 
 period_map = {
-    "1m": "5d",
+    "1m": "5d",  
     "5m": "5d",
     "15m": "5d",
-    "1h": "1mo",
+    "1h": "1mo",  
     "1d": "3mo",
     "1wk": "6mo",
     "1mo": "1y"
@@ -67,9 +61,9 @@ def apply_strategy(df):
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         return None
-
+    
     df = df.dropna(subset=['Close', 'Volume'])
-
+    
     df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
     df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
     df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
