@@ -17,7 +17,10 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading Assistant + Email Alerts")
 
-# Comprehensive commodity tickers with full names
+# Stocks list
+stocks = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA", "INTC"]
+
+# Commodities with full names
 commodities = {
     # Precious Metals
     "GC=F": "Gold",
@@ -57,15 +60,31 @@ commodities = {
     "DX=F": "US Dollar Index"
 }
 
-commodity_options = [f"{name} ({ticker})" for ticker, name in commodities.items()]
+# Forex pairs with full names
+forex = {
+    "EURUSD=X": "EUR/USD",
+    "GBPUSD=X": "GBP/USD",
+    "USDJPY=X": "USD/JPY",
+    "AUDUSD=X": "AUD/USD",
+    "USDCAD=X": "USD/CAD",
+    "USDCHF=X": "USD/CHF",
+    "NZDUSD=X": "NZD/USD"
+}
 
-category = st.radio("Select Category:", ["Stocks", "Commodities"])
+# Prepare options for dropdowns
+commodity_options = [f"{name} ({ticker})" for ticker, name in commodities.items()]
+forex_options = [f"{name} ({ticker})" for ticker, name in forex.items()]
+
+# Select category
+category = st.radio("Select Category:", ["Stocks", "Commodities", "Forex"])
 
 if category == "Stocks":
-    ticker_list = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA", "INTC"]
-    ticker = st.selectbox(f"Select {category} Ticker:", ticker_list)
-else:
+    ticker = st.selectbox(f"Select {category} Ticker:", stocks)
+elif category == "Commodities":
     selected = st.selectbox(f"Select {category} Ticker:", commodity_options)
+    ticker = selected.split("(")[-1].strip(")")
+else:  # Forex
+    selected = st.selectbox(f"Select {category} Pair:", forex_options)
     ticker = selected.split("(")[-1].strip(")")
 
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
