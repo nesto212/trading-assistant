@@ -51,38 +51,55 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
-# Strategy logic
+# Strategy logic with safe indicator calculation
 def apply_strategy(df):
-    if not {'Close', 'Volume'}.issubset(df.columns):
-        st.warning("Data missing required columns 'Close' and/or 'Volume'.")
+    required_cols = {'Close', 'Volume'}
+    if not required_cols.issubset(df.columns):
+        st.warning(f"Data missing required columns {required_cols}.")
         df['signal'] = 0
         return df
 
-    df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
-    df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
-    df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
+    try:
+        df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
+        df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
+        df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
 
-    macd = ta.trend.MACD(df['Close'])
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
+        macd = ta.trend.MACD(df['Close'])
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
 
-    df['volume_ma'] = ta.trend.sma_indicator(df['Volume'], window=20)
+        df['volume_ma'] = ta.trend.sma_indicator(df['Volume'], window=20)
+    except Exception as e:
+        st.error(f"Failed to calculate indicators: {e}")
+        # Create empty indicator columns if calculation fails
+        for col in ['sma10', 'sma30', 'rsi', 'macd', 'macd_signal', 'volume_ma']:
+            if col not in df.columns:
+                df[col] = float('nan')
 
     df['signal'] = 0
-    df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
-    df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
+    # Only assign signals if SMA columns have no NaN (enough data)
+    if df['sma10'].notna().all() and df['sma30'].notna().all():
+        df.loc[df['sma10'] > df['sma30'], 'signal'] = 1
+        df.loc[df['sma10'] < df['sma30'], 'signal'] = -1
 
     return df
+
+def safe_float(val):
+    try:
+        return float(val)
+    except:
+        return float('nan')
 
 # Main logic
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty or len(df) < 2:
-            st.warning("⚠️ No or insufficient data. Check ticker or interval.")
+        if df.empty or len(df) < 30:
+            st.warning("⚠️ No or insufficient data for indicators. Need at least 30 data points.")
             st.stop()
 
         df = apply_strategy(df)
+        st.write("Indicator columns available:", [col for col in df.columns if col in ['sma10', 'sma30', 'rsi', 'macd', 'macd_signal']])
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -91,39 +108,35 @@ if ticker:
             st.session_state.last_signal = 0
 
         signal_text = "⚠️ HOLD — No new signal"
-        if int(prev['signal']) != int(latest['signal']) and int(latest['signal']) != int(st.session_state.last_signal):
-            st.session_state.last_signal = int(latest['signal'])
+        latest_signal = int(latest.get('signal', 0))
+        prev_signal = int(prev.get('signal', 0))
+
+        if prev_signal != latest_signal and latest_signal != st.session_state.last_signal and latest_signal != 0:
+            st.session_state.last_signal = latest_signal
 
             message = (
-                f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
-                f"Price: ${latest['Close']:.2f}\n"
-                f"RSI: {latest['rsi']:.2f}\n"
-                f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
-                f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
+                f"Signal: {'BUY' if latest_signal == 1 else 'SELL'}\n"
+                f"Price: ${safe_float(latest.get('Close', 0)):.2f}\n"
+                f"RSI: {safe_float(latest.get('rsi', float('nan'))):.2f}\n"
+                f"MACD: {safe_float(latest.get('macd', float('nan'))):.2f}, "
+                f"Signal Line: {safe_float(latest.get('macd_signal', float('nan'))):.2f}\n"
+                f"SMA10: {safe_float(latest.get('sma10', float('nan'))):.2f}, "
+                f"SMA30: {safe_float(latest.get('sma30', float('nan'))):.2f}"
             )
 
-            if latest['signal'] == 1:
-                signal_text = f"📈 BUY signal at ${latest['Close']:.2f}"
+            if latest_signal == 1:
+                signal_text = f"📈 BUY signal at ${safe_float(latest.get('Close', 0)):.2f}"
                 send_email(f"BUY Alert for {ticker}", message)
-            elif latest['signal'] == -1:
-                signal_text = f"📉 SELL signal at ${latest['Close']:.2f}"
+            elif latest_signal == -1:
+                signal_text = f"📉 SELL signal at ${safe_float(latest.get('Close', 0)):.2f}"
                 send_email(f"SELL Alert for {ticker}", message)
 
         st.subheader(f"Signal: {signal_text}")
 
         col1, col2, col3 = st.columns(3)
-
-        try:
-            rsi_val = float(latest['rsi'])
-            macd_val = float(latest['macd'])
-            macd_signal_val = float(latest['macd_signal'])
-        except Exception as e:
-            st.error(f"Error converting indicators to float: {e}")
-            rsi_val = macd_val = macd_signal_val = 0.0
-
-        col1.metric("RSI (14)", f"{rsi_val:.2f}")
-        col2.metric("MACD", f"{macd_val:.2f}")
-        col3.metric("Signal Line", f"{macd_signal_val:.2f}")
+        col1.metric("RSI (14)", f"{safe_float(latest.get('rsi', float('nan'))):.2f}")
+        col2.metric("MACD", f"{safe_float(latest.get('macd', float('nan'))):.2f}")
+        col3.metric("Signal Line", f"{safe_float(latest.get('macd_signal', float('nan'))):.2f}")
 
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [3, 1.2, 1.2]})
 
