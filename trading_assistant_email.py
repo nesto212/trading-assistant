@@ -17,8 +17,16 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading 212 Assistant + Email Alerts")
 
-# User inputs
-ticker = st.text_input("Enter Ticker (e.g. AAPL, TSLA):", "TSLA")
+# Popular tickers list
+popular_tickers = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NFLX", "NVDA", "META", "BTC-USD", "ETH-USD"]
+
+ticker_option = st.selectbox("Choose a ticker or enter custom:", popular_tickers + ["Other"])
+
+if ticker_option == "Other":
+    ticker = st.text_input("Enter custom ticker:", "TSLA")
+else:
+    ticker = ticker_option
+
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 
 period_map = {
@@ -59,9 +67,9 @@ def apply_strategy(df):
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         return None
-    
+
     df = df.dropna(subset=['Close', 'Volume'])
-    
+
     df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
     df['sma30'] = ta.trend.sma_indicator(df['Close'], window=30)
     df['rsi'] = ta.momentum.rsi(df['Close'], window=14)
@@ -78,12 +86,9 @@ def apply_strategy(df):
 
 if ticker:
     df = fetch_data(ticker, period, interval)
-    st.write("⚙️ Debug: Columns fetched from Yahoo Finance:", df.columns.tolist())  # <-- debug info here
-
     if df.empty:
         st.warning("⚠️ No data returned. Try changing ticker, interval, or period.")
         st.stop()
-
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("⚠️ Data missing 'Close' or 'Volume'. Try a longer period or lower frequency interval.")
         st.stop()
