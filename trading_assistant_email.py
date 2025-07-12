@@ -17,9 +17,24 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading Assistant + Email Alerts")
 
-# Predefined tickers for dropdown
-ticker_list = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA", "INTC"]
-ticker = st.selectbox("Select Ticker:", ticker_list)
+# Select category: Stocks or Commodities
+category = st.radio("Select Category:", ["Stocks", "Commodities"])
+
+if category == "Stocks":
+    ticker_list = ["AAPL", "TSLA", "AMZN", "GOOGL", "MSFT", "NFLX", "NVDA", "META", "BABA", "INTC"]
+else:
+    ticker_list = [
+        "GC=F",  # Gold
+        "SI=F",  # Silver
+        "CL=F",  # Crude Oil
+        "NG=F",  # Natural Gas
+        "HG=F",  # Copper
+        "CC=F",  # Cocoa
+        "KC=F",  # Coffee
+        "SB=F"   # Sugar
+    ]
+
+ticker = st.selectbox(f"Select {category} Ticker:", ticker_list)
 
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 
