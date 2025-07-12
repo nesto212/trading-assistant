@@ -61,6 +61,17 @@ forex = {
 commodity_options = [f"{name} ({ticker})" for ticker, name in commodities.items()]
 forex_options = [f"{name} ({ticker})" for ticker, name in forex.items()]
 
+category = st.radio("Select Category:", ["Stocks", "Commodities", "Forex"])
+
+if category == "Stocks":
+    ticker = st.selectbox(f"Select {category} Ticker:", stocks)
+elif category == "Commodities":
+    selected = st.selectbox(f"Select {category} Ticker:", commodity_options)
+    ticker = selected.split("(")[-1].strip(")")
+else:
+    selected = st.selectbox(f"Select {category} Pair:", forex_options)
+    ticker = selected.split("(")[-1].strip(")")
+
 interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"], index=4)
 
 period_map = {
@@ -100,7 +111,6 @@ def send_email(subject, body):
 def apply_strategy(df):
     if not {'Close', 'Volume', 'High', 'Low'}.issubset(df.columns):
         return None
-    
     df = df.dropna(subset=['Close', 'Volume', 'High', 'Low'])
     if len(df) < 35:
         return None
@@ -119,7 +129,6 @@ def apply_strategy(df):
     df['stoch_d'] = stoch.stoch_signal()
 
     df['adx'] = ta.trend.adx(df['High'], df['Low'], df['Close'], window=14)
-
     df['vol_ma'] = df['Volume'].rolling(window=20).mean()
 
     df['signal'] = 0
@@ -130,149 +139,35 @@ def apply_strategy(df):
 
 def calculate_tp_sl(latest, atr, signal, risk_reward=2.0, atr_multiplier=1.5):
     entry_price = latest['Close']
-    sl = None
-    tp = None
-    
-    if signal == 1:  # BUY
+    if signal == 1:
         sl = entry_price - atr_multiplier * atr
         tp = entry_price + risk_reward * (entry_price - sl)
-    elif signal == -1:  # SELL
+    elif signal == -1:
         sl = entry_price + atr_multiplier * atr
         tp = entry_price - risk_reward * (sl - entry_price)
-    
+    else:
+        sl, tp = None, None
     return sl, tp
 
-def scan_instruments(tickers, period, interval, top_n=5):
+def scan_instruments(tickers, period, interval):
     results = []
-    for ticker in tickers:
-        df = fetch_data(ticker, period, interval)
-        if df.empty or len(df) < 35:
-            continue
+    for symbol in tickers:
+        df = fetch_data(symbol, period, interval)
         df = apply_strategy(df)
-        if df is None:
+        if df is None or df.empty:
             continue
-        
-        latest = df.iloc[-1]
-        if latest['signal'] != 0:  # Only BUY or SELL signals
-            score = abs(latest['rsi'] - 50)
-            results.append({
-                "Ticker": ticker,
-                "Signal": "BUY" if latest['signal'] == 1 else "SELL",
-                "Price": latest['Close'],
-                "RSI": latest['rsi'],
-                "Score": score
-            })
-    results = sorted(results, key=lambda x: x['Score'], reverse=True)[:top_n]
-    return results
-
-category = st.radio("Select Category:", ["Stocks", "Commodities", "Forex"])
-mode = st.radio("Mode:", ["Manual Select", "Auto Scan"])
-
-if mode == "Manual Select":
-    if category == "Stocks":
-        ticker = st.selectbox(f"Select {category} Ticker:", stocks)
-    elif category == "Commodities":
-        selected = st.selectbox(f"Select {category} Ticker:", commodity_options)
-        ticker = selected.split("(")[-1].strip(")")
-    else:
-        selected = st.selectbox(f"Select {category} Pair:", forex_options)
-        ticker = selected.split("(")[-1].strip(")")
-
-    if ticker:
-        df = fetch_data(ticker, period, interval)
-        if df.empty:
-            st.warning("⚠️ No data returned. Try changing ticker, interval, or period.")
-            st.stop()
-        if not {'Close', 'Volume', 'High', 'Low'}.issubset(df.columns):
-            st.warning("⚠️ Data missing 'Close', 'Volume', 'High', or 'Low'. Try a longer period or lower frequency interval.")
-            st.stop()
-
-        df = apply_strategy(df)
-        if df is None:
-            st.stop()
-
-        if len(df) < 35:
-            st.warning("⚠️ Not enough data points for indicators (need at least 35). Try a longer period.")
-            st.stop()
-
         latest = df.iloc[-1]
         prev = df.iloc[-2]
+        if int(prev['signal']) != int(latest['signal']):
+            results.append({
+                "Ticker": symbol,
+                "Signal": "BUY" if latest['signal'] == 1 else "SELL",
+                "Price": latest['Close'],
+                "RSI": latest['rsi']
+            })
+    return results
 
-        if 'last_signal' not in st.session_state:
-            st.session_state.last_signal = 0
-
-        signal_text = "⚠️ HOLD — No new signal"
-        if int(prev['signal']) != int(latest['signal']) and int(latest['signal']) != int(st.session_state.last_signal):
-            st.session_state.last_signal = int(latest['signal'])
-
-            message = (
-                f"Signal: {'BUY' if latest['signal'] == 1 else 'SELL'}\n"
-                f"Price: ${latest['Close']:.2f}\n"
-                f"RSI: {latest['rsi']:.2f}\n"
-                f"MACD: {latest['macd']:.2f}, Signal Line: {latest['macd_signal']:.2f}\n"
-                f"SMA10: {latest['sma10']:.2f}, SMA30: {latest['sma30']:.2f}"
-            )
-
-            if latest['signal'] == 1:
-                signal_text = f"📈 BUY signal at ${latest['Close']:.2f}"
-                send_email(f"BUY Alert for {ticker}", message)
-            elif latest['signal'] == -1:
-                signal_text = f"📉 SELL signal at ${latest['Close']:.2f}"
-                send_email(f"SELL Alert for {ticker}", message)
-
-        st.subheader(f"Signal: {signal_text}")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("RSI (14)", f"{latest['rsi']:.2f}")
-        col2.metric("MACD", f"{latest['macd']:.2f}")
-        col3.metric("Signal Line", f"{latest['macd_signal']:.2f}")
-
-        if latest['atr'] > 0 and latest['signal'] != 0:
-            sl, tp = calculate_tp_sl(latest, latest['atr'], latest['signal'])
-            st.markdown(f"**Take Profit:** ${tp:.2f}  |  **Stop Loss:** ${sl:.2f}")
-        else:
-            sl, tp = None, None
-            st.markdown("**Take Profit:** N/A  |  **Stop Loss:** N/A")
-
-        fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(14, 18), sharex=True,
-                                                     gridspec_kw={'height_ratios': [3, 1.2, 1.2, 1, 1]})
-
-        ax1.plot(df.index, df['Close'], label='Close Price', color='black')
-        ax1.plot(df.index, df['sma10'], label='SMA 10', color='blue')
-        ax1.plot(df.index, df['sma30'], label='SMA 30', color='red')
-        ax1.set_ylabel("Price")
-        ax1.legend(loc='upper left')
-        ax1.grid(True)
-
-        ax2.plot(df.index, df['rsi'], label='RSI', color='purple')
-        ax2.axhline(70, color='red', linestyle='--')
-        ax2.axhline(30, color='green', linestyle='--')
-        ax2.set_ylabel("RSI")
-        ax2.legend(loc='upper left')
-        ax2.grid(True)
-
-        ax3.plot(df.index, df['macd'], label='MACD', color='green')
-        ax3.plot(df.index, df['macd_signal'], label='Signal Line', color='red')
-        ax3.set_ylabel("MACD")
-        ax3.legend(loc='upper left')
-        ax3.grid(True)
-
-        ax4.plot(df.index, df['adx'], label='ADX', color='orange')
-        ax4.set_ylabel("ADX")
-        ax4.legend(loc='upper left')
-        ax4.grid(True)
-
-        ax5.bar(df.index, df['Volume'], label='Volume', color='gray')
-        ax5.plot(df.index, df['vol_ma'], label='Volume MA', color='blue')
-        ax5.set_ylabel("Volume")
-        ax5.legend(loc='upper left')
-        ax5.grid(True)
-
-        plt.tight_layout()
-        st.pyplot(fig)
-
-else:
-    st.info("🔍 Scanning all instruments for strong BUY/SELL signals...")
+if st.checkbox("🔄 Auto-Scan Top Instruments"):
     if category == "Stocks":
         tickers_to_scan = stocks
     elif category == "Commodities":
@@ -285,8 +180,72 @@ else:
     if scan_results:
         st.write(f"### Top {len(scan_results)} trading opportunities:")
         for res in scan_results:
-            st.markdown(
-                f"**{res['Ticker']}** | Signal: {res['Signal']} | Price: ${res['Price']:.2f} | RSI: {res['RSI']:.1f}"
-            )
+            st.markdown(f"**{res['Ticker']}** | Signal: {res['Signal']} | Price: ${res['Price']:.2f} | RSI: {res['RSI']:.1f}")
+
+        if st.button("Generate Charts for Scanner Results"):
+            for res in scan_results:
+                ticker = res['Ticker']
+                st.subheader(f"Charts & Signals for {ticker}")
+                df = fetch_data(ticker, period, interval)
+                df = apply_strategy(df)
+                if df is None or len(df) < 35:
+                    st.warning(f"Not enough data for {ticker}")
+                    continue
+                latest = df.iloc[-1]
+                signal = latest['signal']
+                sl, tp = calculate_tp_sl(latest, latest['atr'], signal)
+
+                st.markdown(f"**Signal:** {'BUY' if signal == 1 else 'SELL' if signal == -1 else 'HOLD'}")
+                st.markdown(f"**Price:** ${latest['Close']:.2f} | **RSI:** {latest['rsi']:.1f}")
+                st.markdown(f"**TP:** ${tp:.2f} | **SL:** ${sl:.2f}")
+
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.plot(df.index, df['Close'], label='Close', color='black')
+                ax.plot(df.index, df['sma10'], label='SMA10', color='blue')
+                ax.plot(df.index, df['sma30'], label='SMA30', color='red')
+                if sl and tp:
+                    ax.axhline(sl, color='red', linestyle='--', label='SL')
+                    ax.axhline(tp, color='green', linestyle='--', label='TP')
+                ax.legend()
+                st.pyplot(fig)
     else:
-        st.warning("No strong signals found in the selected category.")
+        st.warning("No strong signals found.")
+else:
+    st.info("📊 Manual analysis mode enabled.")
+    if ticker:
+        df = fetch_data(ticker, period, interval)
+        if df.empty:
+            st.warning("No data found. Try a different selection.")
+            st.stop()
+        df = apply_strategy(df)
+        if df is None:
+            st.warning("Failed to apply strategy.")
+            st.stop()
+
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        if 'last_signal' not in st.session_state:
+            st.session_state.last_signal = 0
+
+        signal = int(latest['signal'])
+        signal_text = "⚠️ HOLD"
+        if int(prev['signal']) != signal and signal != st.session_state.last_signal:
+            st.session_state.last_signal = signal
+            signal_text = f"{'📈 BUY' if signal == 1 else '📉 SELL'} signal at ${latest['Close']:.2f}"
+            msg = f"Signal: {signal_text}\nPrice: {latest['Close']}\nRSI: {latest['rsi']}"
+            send_email(f"{signal_text} Alert - {ticker}", msg)
+
+        st.subheader(f"Signal: {signal_text}")
+        sl, tp = calculate_tp_sl(latest, latest['atr'], signal)
+        st.markdown(f"**TP:** ${tp:.2f} | **SL:** ${sl:.2f}")
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(df.index, df['Close'], label='Close', color='black')
+        ax.plot(df.index, df['sma10'], label='SMA10', color='blue')
+        ax.plot(df.index, df['sma30'], label='SMA30', color='red')
+        if sl and tp:
+            ax.axhline(sl, color='red', linestyle='--', label='SL')
+            ax.axhline(tp, color='green', linestyle='--', label='TP')
+        ax.legend()
+        st.pyplot(fig)
