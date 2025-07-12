@@ -17,16 +17,44 @@ SMTP_PORT = 587
 st.set_page_config(page_title="Trading Assistant with Alerts", layout="wide")
 st.title("📧 Trading Assistant + Email Alerts")
 
-# Commodity tickers with full names
+# Comprehensive commodity tickers with full names
 commodities = {
+    # Precious Metals
     "GC=F": "Gold",
     "SI=F": "Silver",
-    "CL=F": "Crude Oil",
+    "PL=F": "Platinum",
+    "PA=F": "Palladium",
+
+    # Energy
+    "CL=F": "Crude Oil (WTI)",
+    "BZ=F": "Brent Crude Oil",
     "NG=F": "Natural Gas",
-    "HG=F": "Copper",
-    "CC=F": "Cocoa",
+    "HO=F": "Heating Oil",
+    "RB=F": "RBOB Gasoline",
+
+    # Agriculture - Grains & Oilseeds
+    "ZW=F": "Wheat",
+    "ZC=F": "Corn",
+    "ZS=F": "Soybeans",
+    "ZL=F": "Soybean Oil",
+    "ZM=F": "Soybean Meal",
+
+    # Soft Commodities
     "KC=F": "Coffee",
-    "SB=F": "Sugar"
+    "CC=F": "Cocoa",
+    "SB=F": "Sugar #11",
+    "CT=F": "Cotton",
+
+    # Livestock
+    "LE=F": "Live Cattle",
+    "HE=F": "Lean Hogs",
+
+    # Base Metals
+    "HG=F": "Copper",
+
+    # Other
+    "QC=F": "Canadian Dollar",
+    "DX=F": "US Dollar Index"
 }
 
 commodity_options = [f"{name} ({ticker})" for ticker, name in commodities.items()]
