@@ -51,11 +51,13 @@ def send_email(subject, body):
     except Exception as e:
         st.error(f"❌ Failed to send email: {e}")
 
-# Strategy logic
+# Strategy logic with added safety checks
 def apply_strategy(df):
     if not {'Close', 'Volume'}.issubset(df.columns):
         st.warning("Data missing required columns 'Close' and/or 'Volume'.")
         df['signal'] = 0
+        for col in ['rsi', 'macd', 'macd_signal', 'sma10', 'sma30']:
+            df[col] = 0
         return df
 
     df['sma10'] = ta.trend.sma_indicator(df['Close'], window=10)
@@ -78,8 +80,8 @@ def apply_strategy(df):
 if ticker:
     try:
         df = fetch_data(ticker, period, interval)
-        if df.empty or len(df) < 2:
-            st.warning("⚠️ No or insufficient data. Check ticker or interval.")
+        if df.empty:
+            st.warning("⚠️ No data retrieved for this ticker/interval.")
             st.stop()
 
         df = apply_strategy(df)
